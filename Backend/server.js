@@ -1,15 +1,25 @@
 const express = require('express');
 const cors = require('cors');
 const pool = require('./config/db');
+const path = require('path');
+const fs = require('fs');
 
 const documentRoutes = require('./routes/documentRoutes');
 const approvalRoutes = require('./routes/approvalRoutes');
 const userRoutes = require('./routes/userRoutes');
+const authRoutes = require('./routes/authRoutes');
 
 const app = express();
 
+const uploadsDir = path.join(__dirname, 'uploads');
+
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(uploadsDir));
 
 app.get('/api/health', async (req, res) => {
   try {
@@ -43,6 +53,7 @@ app.get('/api/dashboard/summary', async (req, res) => {
 app.use('/api/documents', documentRoutes);
 app.use('/api/approvals', approvalRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/auth', authRoutes);
 
 const PORT = process.env.PORT || 5000;
 

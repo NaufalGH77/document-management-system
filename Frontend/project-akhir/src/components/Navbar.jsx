@@ -1,12 +1,4 @@
-const navItems = [
-	{ id: 'dashboard', label: 'Dashboard' },
-	{ id: 'explorer', label: 'File Explorer' },
-	{ id: 'approvals', label: 'Approvals' },
-	{ id: 'users', label: 'User Management' },
-	{ id: 'detail', label: 'Document Detail' },
-];
-
-export default function Navbar({ activeView, onNavigate }) {
+export default function Navbar({ activeView, onNavigate, navItems = [], user, onLogout }) {
 	return (
 		<header className="topbar">
 			<div>
@@ -28,8 +20,13 @@ export default function Navbar({ activeView, onNavigate }) {
 			</nav>
 
 			<div className="topbar-meta">
-				<span>Role</span>
-				<strong>Document Admin</strong>
+				<span>{user?.role || 'Role'}</span>
+				<strong>{user?.fullName || 'Guest'}</strong>
+				{onLogout && (
+					<button type="button" className="ghost-action topbar-logout" onClick={onLogout}>
+						Logout
+					</button>
+				)}
 			</div>
 		</header>
 	);
