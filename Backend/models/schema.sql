@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255),
     password_salt VARCHAR(255),
-    role VARCHAR(50) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'editor', 'reviewer', 'user', 'viewer')),
+    role VARCHAR(50) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'editor', 'reviewer', 'supervisor', 'manager', 'user', 'viewer')),
     department VARCHAR(120),
     status VARCHAR(30) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'blocked')),
     last_login_at TIMESTAMP,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS documents (
     file_path VARCHAR(500) NOT NULL,
     file_type VARCHAR(100) NOT NULL,
     file_size_bytes BIGINT,
-    status VARCHAR(50) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'pending', 'approved', 'rejected', 'archived')),
+    status VARCHAR(50) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'wait_for_finalization', 'final', 'rejected', 'archived')),
     current_version VARCHAR(20) NOT NULL DEFAULT 'v1.0',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -68,12 +68,23 @@ CREATE TABLE IF NOT EXISTS approvals (
     document_id INT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     requested_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
     reviewer_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    stage VARCHAR(50) NOT NULL DEFAULT 'supervisor_review' CHECK (stage IN ('supervisor_review', 'manager_review')),
     status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'changes_requested', 'cancelled')),
     due_date DATE,
     notes TEXT,
+    decision_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    decision_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS stage VARCHAR(50) NOT NULL DEFAULT 'supervisor_review';
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS decision_by_user_id INT REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS decision_at TIMESTAMP;
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'draft';
+ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_status_check;
+ALTER TABLE documents ADD CONSTRAINT documents_status_check CHECK (status IN ('draft', 'wait_for_finalization', 'final', 'rejected', 'archived'));
 
 CREATE TABLE IF NOT EXISTS auth_tokens (
     id SERIAL PRIMARY KEY,

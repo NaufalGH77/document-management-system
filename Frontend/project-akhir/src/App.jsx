@@ -25,7 +25,6 @@ const emptyAuthForm = {
 const emptyUploadDocumentForm = {
   title: '',
   summary: '',
-  status: 'draft',
   currentVersion: 'v1.0',
   changeNote: '',
   file: null,
@@ -34,7 +33,6 @@ const emptyUploadDocumentForm = {
 const emptyEditDocumentForm = {
   title: '',
   summary: '',
-  status: 'draft',
   changeNote: '',
   file: null,
 };
@@ -345,10 +343,33 @@ function App() {
   const toEditDocumentForm = (document) => ({
     title: document.title || '',
     summary: document.summary || '',
-    status: document.status || 'draft',
     changeNote: '',
     file: null,
   });
+
+  const getApprovalStageLabel = (stage) => {
+    if (stage === 'supervisor_review') {
+      return 'Supervisor review';
+    }
+
+    if (stage === 'manager_review') {
+      return 'Manager finalization';
+    }
+
+    return stage || 'Pending';
+  };
+
+  const getDocumentStatusLabel = (status) => {
+    if (status === 'wait_for_finalization') {
+      return 'Wait for finalization';
+    }
+
+    if (status === 'final') {
+      return 'Final';
+    }
+
+    return status || 'Draft';
+  };
 
   const toAdminEditForm = (user) => ({
     fullName: user.fullName || '',
@@ -456,6 +477,14 @@ function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const canUserApprove = (approval) => {
+    if (approval.status !== 'pending') return false;
+    if (isAdmin) return true;
+    if (approval.stage === 'supervisor_review' && currentUser?.role === 'supervisor') return true;
+    if (approval.stage === 'manager_review' && currentUser?.role === 'manager') return true;
+    return false;
   };
 
   const handleApprovalAction = async (approvalId, status) => {
@@ -710,29 +739,14 @@ function App() {
                     onChange={(event) => setUploadDocumentForm({ ...uploadDocumentForm, summary: event.target.value })}
                   />
                 </label>
-                <div className="form-note">Documents are uploaded as unfiled by default. Folder assignment can be added later.</div>
-                <div className="split-fields">
-                  <label className="field">
-                    <span>Status</span>
-                    <select
-                      value={uploadDocumentForm.status}
-                      onChange={(event) => setUploadDocumentForm({ ...uploadDocumentForm, status: event.target.value })}
-                    >
-                      <option value="draft">Draft</option>
-                      <option value="pending">Pending</option>
-                      <option value="approved">Approved</option>
-                      <option value="rejected">Rejected</option>
-                      <option value="archived">Archived</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>Version</span>
-                    <input
-                      value={uploadDocumentForm.currentVersion}
-                      onChange={(event) => setUploadDocumentForm({ ...uploadDocumentForm, currentVersion: event.target.value })}
-                    />
-                  </label>
-                </div>
+                <div className="form-note">Documents start as draft automatically, then move through supervisor and manager approval.</div>
+                <label className="field">
+                  <span>Version</span>
+                  <input
+                    value={uploadDocumentForm.currentVersion}
+                    onChange={(event) => setUploadDocumentForm({ ...uploadDocumentForm, currentVersion: event.target.value })}
+                  />
+                </label>
                 <label className="field">
                   <span>Change note</span>
                   <input
@@ -762,7 +776,7 @@ function App() {
                     <div>
                       <div className="document-title-row">
                         <h3>{document.title}</h3>
-                        <span className={`status-pill ${statusClass(document.status)}`}>{document.status}</span>
+                        <span className={`status-pill ${statusClass(document.status)}`}>{getDocumentStatusLabel(document.status)}</span>
                       </div>
                       <p>{document.folder || 'Unfiled'}</p>
                     </div>
@@ -793,7 +807,7 @@ function App() {
                     <div>
                       <div className="document-title-row">
                         <h3>{document.title}</h3>
-                        <span className={`status-pill ${statusClass(document.status)}`}>{document.status}</span>
+                        <span className={`status-pill ${statusClass(document.status)}`}>{getDocumentStatusLabel(document.status)}</span>
                       </div>
                       <p>{document.folder || 'Unfiled'}</p>
                     </div>
@@ -830,25 +844,11 @@ function App() {
                       onChange={(event) => setEditDocumentForm({ ...editDocumentForm, summary: event.target.value })}
                     />
                   </label>
-                  <div className="split-fields">
-                    <label className="field">
-                      <span>Status</span>
-                      <select
-                        value={editDocumentForm.status}
-                        onChange={(event) => setEditDocumentForm({ ...editDocumentForm, status: event.target.value })}
-                      >
-                        <option value="draft">Draft</option>
-                        <option value="pending">Pending</option>
-                        <option value="approved">Approved</option>
-                        <option value="rejected">Rejected</option>
-                        <option value="archived">Archived</option>
-                      </select>
-                    </label>
-                    <label className="field">
-                      <span>Current version</span>
-                      <input value={selectedDocument.version} disabled />
-                    </label>
-                  </div>
+                  <div className="form-note">Status is controlled by approval workflow. Current document status: {getDocumentStatusLabel(selectedDocument.status)}.</div>
+                  <label className="field">
+                    <span>Current version</span>
+                    <input value={selectedDocument.version} disabled />
+                  </label>
                   <label className="field">
                     <span>Change note</span>
                     <input
@@ -880,7 +880,12 @@ function App() {
 
               <div className="document-list">
                 {documents.map((document) => (
-                  <button key={document.id} type="button" className="document-row document-button" onClick={() => handleViewDocument(document.id)}>
+                  <button
+                    key={document.id}
+                    type="button"
+                    className={`document-row document-button ${selectedDocument?.id === document.id ? 'active-doc' : ''}`}
+                    onClick={() => handleViewDocument(document.id)}
+                  >
                     <div>
                       <div className="document-title-row">
                         <h3>{document.title}</h3>
@@ -896,102 +901,73 @@ function App() {
                   </button>
                 ))}
               </div>
-
-              {selectedDocument && (
-                <div className="detail-card">
-                  <div className="section-heading">
-                    <h2>Selected document</h2>
-                    <span>{selectedDocument.fileType}</span>
-                  </div>
-                  <p>{selectedDocument.summary}</p>
-                  <div className="detail-grid">
-                    <div>
-                      <span>Owner</span>
-                      <strong>{selectedDocument.owner}</strong>
-                    </div>
-                    <div>
-                      <span>Version</span>
-                      <strong>{selectedDocument.version}</strong>
-                    </div>
-                    <div>
-                      <span>Size</span>
-                      <strong>{formatSize(selectedDocument.fileSizeBytes)}</strong>
-                    </div>
-                  </div>
-                  <div className="action-group detail-actions">
-                    <button type="button" className="primary-action" onClick={() => handleOpenDocument(selectedDocument.fileUrl)}>
-                      Open document
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadDocument(selectedDocument.fileUrl, selectedDocument.originalFileName || selectedDocument.fileName)}
-                    >
-                      Download document
-                    </button>
-                    <button type="button" onClick={() => handleSelectDocumentForEdit(selectedDocument.id)}>
-                      Edit document
-                    </button>
-                  </div>
-                  <p className="small-print">File: {selectedDocument.fileName}</p>
-                  {selectedDocument.versions?.length > 0 && (
-                    <div className="timeline">
-                      {selectedDocument.versions.map((version) => (
-                        <div key={version.id} className="timeline-item">
-                          <span className="timeline-dot" />
-                          <p>{version.versionLabel} - {version.changeNote || 'Version saved'}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </article>
+
+            {selectedDocument ? (
+              <article className="panel detail-card">
+                <div className="section-heading">
+                  <h2>Selected document</h2>
+                  <span>{selectedDocument.fileType}</span>
+                </div>
+                <p>{selectedDocument.summary}</p>
+                <div className="detail-grid">
+                  <div>
+                    <span>Owner</span>
+                    <strong>{selectedDocument.owner}</strong>
+                  </div>
+                  <div>
+                    <span>Version</span>
+                    <strong>{selectedDocument.version}</strong>
+                  </div>
+                  <div>
+                    <span>Size</span>
+                    <strong>{formatSize(selectedDocument.fileSizeBytes)}</strong>
+                  </div>
+                </div>
+                <div className="action-group detail-actions">
+                  <button type="button" className="primary-action" onClick={() => handleOpenDocument(selectedDocument.fileUrl)}>
+                    Open document
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadDocument(selectedDocument.fileUrl, selectedDocument.originalFileName || selectedDocument.fileName)}
+                  >
+                    Download document
+                  </button>
+                  <button type="button" onClick={() => handleSelectDocumentForEdit(selectedDocument.id)}>
+                    Edit document
+                  </button>
+                </div>
+                <p className="small-print">File: {selectedDocument.fileName}</p>
+                {selectedDocument.versions?.length > 0 && (
+                  <div className="timeline">
+                    {selectedDocument.versions.map((version) => (
+                      <div key={version.id} className="timeline-item">
+                        <span className="timeline-dot" />
+                        <p>{version.versionLabel} - {version.changeNote || 'Version saved'}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+            ) : (
+              <article className="panel flex flex-col items-center justify-center text-center p-8 text-slate-400">
+                <p className="text-lg font-medium">No document selected</p>
+                <p className="text-sm text-slate-500 mt-1">Select a document from the list to view its details, history, and actions.</p>
+              </article>
+            )}
           </section>
         );
       case 'approvals':
         return (
-          <section className="grid gap-6 xl:grid-cols-[0.85fr_1.15fr]">
-            <article className="panel">
-              <div className="section-heading">
-                <h2>Create approval</h2>
-                <span>Request a review</span>
-              </div>
-
-              <form className="form-grid" onSubmit={handleCreateApproval}>
-                <label className="field">
-                  <span>Document ID</span>
-                  <input
-                    value={approvalForm.documentId}
-                    onChange={(event) => setApprovalForm({ ...approvalForm, documentId: event.target.value })}
-                  />
-                </label>
-                <label className="field">
-                  <span>Due date</span>
-                  <input
-                    type="date"
-                    value={approvalForm.dueDate}
-                    onChange={(event) => setApprovalForm({ ...approvalForm, dueDate: event.target.value })}
-                  />
-                </label>
-                <label className="field">
-                  <span>Notes</span>
-                  <textarea
-                    rows="4"
-                    value={approvalForm.notes}
-                    onChange={(event) => setApprovalForm({ ...approvalForm, notes: event.target.value })}
-                  />
-                </label>
-                <button type="submit" className="primary-action" disabled={loading}>Create approval</button>
-              </form>
-            </article>
-
+          <section className="grid gap-6">
             <article className="panel">
               <div className="section-heading">
                 <h2>Approval queue</h2>
                 <span>{approvals.length} records</span>
               </div>
 
-              <div className="approval-grid">
+              <div className="approval-grid md:grid-cols-2">
                 {approvals.map((approval) => (
                   <article key={approval.id} className="approval-card">
                     <div>
@@ -999,15 +975,20 @@ function App() {
                       <p>Requested by: {approval.requested_by}</p>
                     </div>
                     <div className="approval-meta">
+                      <span>Stage: {getApprovalStageLabel(approval.stage)}</span>
                       <span>Reviewer: {approval.reviewer_name}</span>
+                      <span>Decision by: {approval.decision_by_name || '-'}</span>
                       <span>Due: {approval.due_date || 'No date set'}</span>
+                      <span>Document status: {getDocumentStatusLabel(approval.document_status)}</span>
                     </div>
                     <div className="approval-footer">
                       <span className={`status-pill ${statusClass(approval.status)}`}>{approval.status}</span>
-                      <div className="action-group">
-                        <button type="button" onClick={() => handleApprovalAction(approval.id, 'rejected')}>Reject</button>
-                        <button type="button" className="primary-action" onClick={() => handleApprovalAction(approval.id, 'approved')}>Approve</button>
-                      </div>
+                      {canUserApprove(approval) && (
+                        <div className="action-group">
+                          <button type="button" onClick={() => handleApprovalAction(approval.id, 'rejected')}>Reject</button>
+                          <button type="button" className="primary-action" onClick={() => handleApprovalAction(approval.id, 'approved')}>Approve</button>
+                        </div>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -1042,9 +1023,8 @@ function App() {
                     <span>Role</span>
                     <select value={userForm.role} onChange={(event) => setUserForm({ ...userForm, role: event.target.value })}>
                       <option value="user">User</option>
-                      <option value="viewer">Viewer</option>
-                      <option value="editor">Editor</option>
-                      <option value="reviewer">Reviewer</option>
+                      <option value="supervisor">Supervisor</option>
+                      <option value="manager">Manager</option>
                       <option value="admin">Admin</option>
                     </select>
                   </label>
@@ -1156,9 +1136,8 @@ function App() {
                           <span>Role</span>
                           <select value={adminUserEditForm.role} onChange={(event) => setAdminUserEditForm({ ...adminUserEditForm, role: event.target.value })}>
                             <option value="user">User</option>
-                            <option value="viewer">Viewer</option>
-                            <option value="editor">Editor</option>
-                            <option value="reviewer">Reviewer</option>
+                            <option value="supervisor">Supervisor</option>
+                            <option value="manager">Manager</option>
                           </select>
                         </label>
                         <label className="field">

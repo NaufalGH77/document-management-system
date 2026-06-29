@@ -1,5 +1,11 @@
 const pool = require('../config/db');
 const { nextVersionLabel } = require('../utils/security');
+const {
+  APPROVAL_STAGE,
+  DOCUMENT_STATUS,
+  getDocumentStatusForStage,
+  getInitialApprovalStage,
+} = require('../utils/workflow');
 
 function buildFileUrl(filePath) {
   return filePath ? `/uploads/${filePath.replace(/\\/g, '/')}` : null;
@@ -44,7 +50,13 @@ async function listDocuments(req, res) {
        LEFT JOIN folders f ON f.id = d.folder_id
        LEFT JOIN users u ON u.id = d.owner_user_id
        LEFT JOIN users up ON up.id = d.uploaded_by_user_id
-       ORDER BY d.updated_at DESC, d.created_at DESC`
+       WHERE 
+         $1 = 'admin'
+         OR ($1 = 'manager' AND (up.role IN ('user', 'supervisor', 'manager') OR up.role IS NULL))
+         OR ($1 = 'supervisor' AND (up.role IN ('user', 'supervisor') OR up.role IS NULL))
+         OR ($1 NOT IN ('admin', 'manager', 'supervisor') AND (up.role = 'user' OR up.role IS NULL))
+       ORDER BY d.updated_at DESC, d.created_at DESC`,
+      [req.user.role]
     );
 
     res.json(result.rows.map(parseDocument));
@@ -71,7 +83,8 @@ async function getDocumentById(req, res) {
          COALESCE(f.name, 'Unfiled') AS folder_name,
          COALESCE(u.full_name, 'Unassigned') AS owner_name,
          u.department AS owner_department,
-         COALESCE(up.full_name, 'Unassigned') AS uploaded_by_name
+         COALESCE(up.full_name, 'Unassigned') AS uploaded_by_name,
+         up.role AS uploaded_by_role
        FROM documents d
        LEFT JOIN folders f ON f.id = d.folder_id
        LEFT JOIN users u ON u.id = d.owner_user_id
@@ -82,6 +95,20 @@ async function getDocumentById(req, res) {
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Document not found' });
+    }
+
+    const doc = result.rows[0];
+    const uploaderRole = doc.uploaded_by_role;
+
+    // Check authorization to view
+    const isAuthorized = 
+      req.user.role === 'admin'
+      || (req.user.role === 'manager' && (['user', 'supervisor', 'manager'].includes(uploaderRole) || !uploaderRole))
+      || (req.user.role === 'supervisor' && (['user', 'supervisor'].includes(uploaderRole) || !uploaderRole))
+      || (!['admin', 'manager', 'supervisor'].includes(req.user.role) && (uploaderRole === 'user' || !uploaderRole));
+
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
 
     const versionsResult = await pool.query(
@@ -171,8 +198,24 @@ async function createDocument(req, res) {
           storedFilePath,
           storedFileType,
           storedFileSize,
-          status,
+          DOCUMENT_STATUS.DRAFT,
           currentVersion,
+        ]
+      );
+
+      const initialStage = getInitialApprovalStage(req.user.role);
+
+      await client.query(
+        `INSERT INTO approvals
+         (document_id, requested_by_user_id, stage, status, notes)
+         VALUES ($1, $2, $3, 'pending', $4)`,
+        [
+          result.rows[0].id,
+          req.user.id,
+          initialStage,
+          initialStage === APPROVAL_STAGE.MANAGER
+            ? 'Auto-created manager review for supervisor-uploaded document'
+            : 'Auto-created supervisor review for uploaded document',
         ]
       );
 
@@ -196,7 +239,7 @@ async function createDocument(req, res) {
         id: result.rows[0].id,
         title: result.rows[0].title,
         summary: result.rows[0].summary,
-        status: result.rows[0].status,
+        status: DOCUMENT_STATUS.DRAFT,
         version: result.rows[0].current_version,
         fileUrl: buildFileUrl(result.rows[0].file_path),
       });
@@ -213,16 +256,34 @@ async function createDocument(req, res) {
 
 async function updateDocument(req, res) {
   const { id } = req.params;
-  const { folderId, ownerUserId, title, summary, status, changeNote } = req.body;
+  const { folderId, ownerUserId, title, summary, changeNote } = req.body;
 
   try {
-    const existing = await pool.query('SELECT * FROM documents WHERE id = $1', [id]);
+    const existing = await pool.query(
+      `SELECT d.*, up.role AS uploaded_by_role 
+       FROM documents d
+       LEFT JOIN users up ON up.id = d.uploaded_by_user_id
+       WHERE d.id = $1`,
+      [id]
+    );
 
     if (existing.rowCount === 0) {
       return res.status(404).json({ error: 'Document not found' });
     }
 
     const currentDocument = existing.rows[0];
+    const uploaderRole = currentDocument.uploaded_by_role;
+
+    const isAuthorized = 
+      req.user.role === 'admin'
+      || (req.user.role === 'manager' && (['user', 'supervisor', 'manager'].includes(uploaderRole) || !uploaderRole))
+      || (req.user.role === 'supervisor' && (['user', 'supervisor'].includes(uploaderRole) || !uploaderRole))
+      || (!['admin', 'manager', 'supervisor'].includes(req.user.role) && (uploaderRole === 'user' || !uploaderRole));
+
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
     const canManageAllDocuments = ['admin', 'editor'].includes(req.user.role);
     const isDocumentOwner = req.user.id === currentDocument.owner_user_id || req.user.id === currentDocument.uploaded_by_user_id;
 
@@ -255,12 +316,6 @@ async function updateDocument(req, res) {
     if (summary !== undefined) {
       updates.push(`summary = $${index}`);
       values.push(summary || null);
-      index += 1;
-    }
-
-    if (status) {
-      updates.push(`status = $${index}`);
-      values.push(status);
       index += 1;
     }
 
@@ -358,10 +413,28 @@ async function updateDocument(req, res) {
 
 async function deleteDocument(req, res) {
   try {
-    const existing = await pool.query('SELECT id, owner_user_id, uploaded_by_user_id FROM documents WHERE id = $1', [req.params.id]);
+    const existing = await pool.query(
+      `SELECT d.id, d.owner_user_id, d.uploaded_by_user_id, up.role AS uploaded_by_role 
+       FROM documents d
+       LEFT JOIN users up ON up.id = d.uploaded_by_user_id
+       WHERE d.id = $1`,
+      [req.params.id]
+    );
 
     if (existing.rowCount === 0) {
       return res.status(404).json({ error: 'Document not found' });
+    }
+
+    const uploaderRole = existing.rows[0].uploaded_by_role;
+
+    const isAuthorized = 
+      req.user.role === 'admin'
+      || (req.user.role === 'manager' && (['user', 'supervisor', 'manager'].includes(uploaderRole) || !uploaderRole))
+      || (req.user.role === 'supervisor' && (['user', 'supervisor'].includes(uploaderRole) || !uploaderRole))
+      || (!['admin', 'manager', 'supervisor'].includes(req.user.role) && (uploaderRole === 'user' || !uploaderRole));
+
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
 
     const canManageAllDocuments = ['admin', 'editor'].includes(req.user.role);

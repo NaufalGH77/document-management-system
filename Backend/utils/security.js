@@ -41,7 +41,7 @@ function sanitizeUser(row) {
 }
 
 function isValidRole(role) {
-  return ['admin', 'editor', 'reviewer', 'user', 'viewer'].includes(role);
+  return ['admin', 'editor', 'reviewer', 'supervisor', 'manager', 'user', 'viewer'].includes(role);
 }
 
 function nextVersionLabel(currentVersion) {
